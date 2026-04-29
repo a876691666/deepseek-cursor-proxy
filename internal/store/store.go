@@ -420,11 +420,9 @@ func encodeCanonical(value any) ([]byte, error) {
 }
 
 func jsonEncodeString(s string) []byte {
-	// Use encoding/json for a safe escape of control characters and quotes,
-	// but with HTMLEscape disabled would still escape <, >, &. Python's
-	// json.dumps with ensure_ascii=False does not escape <, >, &. Compose
-	// manually to match Python output.
-	buf := make([]byte, 0, len(s)+2)
+	// Compose manually to match Python's `json.dumps(..., ensure_ascii=False)`
+	// behaviour, which does not escape <, >, &.
+	buf := make([]byte, 0, len(s))
 	buf = append(buf, '"')
 	for _, r := range s {
 		switch r {
