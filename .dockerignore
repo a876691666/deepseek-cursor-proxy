@@ -1,0 +1,18 @@
+.git
+.github
+.gitignore
+.dockerignore
+README.md
+LICENSE
+assets
+*.md
+Dockerfile
+docker-compose.yml
+# Build artifacts
+bin/
+dist/
+*.test
+*.out
+# IDE / editor
+.vscode/
+.idea/
