@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -35,7 +36,10 @@ thinking: pass-through
 display_reasoning: false
 verbose: true
 cors: true
-reasoning_content_path: cache.sqlite3
+pb_data_dir: ./mydata
+pb_admin_email: my@test.com
+pb_admin_password: secret
+deepseek_api_key: sk-mykey
 missing_reasoning_strategy: reject
 reasoning_cache_max_age_seconds: 60
 reasoning_cache_max_rows: 5
@@ -56,7 +60,7 @@ max_request_body_bytes: 9999
 		t.Errorf("port: %d", cfg.Port)
 	}
 	if cfg.UpstreamBaseURL != "https://example.com" {
-		t.Errorf("base_url should drop trailing slash, got %q", cfg.UpstreamBaseURL)
+		t.Errorf("base_url: %q", cfg.UpstreamBaseURL)
 	}
 	if cfg.UpstreamModel != "deepseek-foo" {
 		t.Errorf("model: %q", cfg.UpstreamModel)
@@ -76,8 +80,17 @@ max_request_body_bytes: 9999
 	if cfg.MissingReasoningStrategy != "reject" {
 		t.Errorf("missing_reasoning_strategy: %q", cfg.MissingReasoningStrategy)
 	}
-	if cfg.ReasoningContentPath != filepath.Join(dir, "cache.sqlite3") {
-		t.Errorf("reasoning_content_path should be relative to config dir, got %q", cfg.ReasoningContentPath)
+	if cfg.PBDataDir != filepath.Join(dir, "mydata") {
+		t.Errorf("pb_data_dir: %q", cfg.PBDataDir)
+	}
+	if cfg.PBAdminEmail != "my@test.com" {
+		t.Errorf("pb_admin_email: %q", cfg.PBAdminEmail)
+	}
+	if cfg.PBAdminPassword != "secret" {
+		t.Errorf("pb_admin_password: %q", cfg.PBAdminPassword)
+	}
+	if cfg.DeepSeekAPIKey != "sk-mykey" {
+		t.Errorf("deepseek_api_key: %q", cfg.DeepSeekAPIKey)
 	}
 	if cfg.ReasoningCacheMaxAgeSeconds != 60 {
 		t.Errorf("max_age_seconds: %d", cfg.ReasoningCacheMaxAgeSeconds)
@@ -166,7 +179,7 @@ func TestPopulateDefaultConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stat.Mode().Perm() != 0o600 {
+	if stat.Mode().Perm() != 0o600 && runtime.GOOS != "windows" {
 		t.Errorf("expected 0600 perm, got %v", stat.Mode().Perm())
 	}
 }

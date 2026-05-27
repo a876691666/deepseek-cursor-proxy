@@ -2,6 +2,7 @@
 /deepseek-cursor-proxy
 /bin/
 /dist/
+/build/
 *.exe
 *.test
 *.out
@@ -26,3 +27,6 @@ reasoning_content.sqlite3*
 # Cursor
 .cursorignore
 .cursorindexingignore
+
+pb_data
+config.yaml

@@ -9,16 +9,23 @@ services:
     ports:
       - "9000:9000"
     environment:
-      # Override these on the docker compose command line or via an .env file.
+      # DeepSeek API key (override with your real key).
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # PocketBase admin credentials.
+      PB_ADMIN_EMAIL: ${PB_ADMIN_EMAIL:-admin}
+      PB_ADMIN_PASSWORD: ${PB_ADMIN_PASSWORD:-admin123}
+      # PocketBase data directory.
+      PB_DATA_DIR: ${PB_DATA_DIR:-/home/app/.deepseek-cursor-proxy/pb_data}
+      # Timezone.
       TZ: ${TZ:-UTC}
     volumes:
-      # Persist the SQLite reasoning cache + config across restarts.
+      # Persist the SQLite reasoning cache + PocketBase data across restarts.
       - deepseek-cursor-proxy-data:/home/app/.deepseek-cursor-proxy
+      # Mount local config.yaml into container.
+      - ./config.yaml:/home/app/config.yaml:ro
     command:
-      - --host
-      - 0.0.0.0
-      - --port
-      - "9000"
+      - --config
+      - /home/app/config.yaml
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9000/healthz"]
       interval: 30s

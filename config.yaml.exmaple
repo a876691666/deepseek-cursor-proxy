@@ -1,0 +1,35 @@
+# deepseek-cursor-proxy configuration
+# Values here override environment variables. Use CLI flags for final overrides.
+
+# ---- Upstream DeepSeek API (OpenAI format) ----
+base_url: https://api.deepseek.com
+model: deepseek-v4-pro
+
+# ---- Upstream DeepSeek API (Anthropic format) ----
+# 取消注释以启用 Anthropic /v1/messages 端点
+anthropic_base_url: https://api.deepseek.com/anthropic
+anthropic_api_path: /v1/messages
+thinking: enabled
+reasoning_effort: max
+display_reasoning: true
+
+# API key for upstream DeepSeek requests (overrides DEEPSEEK_API_KEY env var).
+# deepseek_api_key: sk-xxx
+
+# ---- Proxy server ----
+host: 0.0.0.0
+port: 9000
+verbose: false
+request_timeout: 300
+max_request_body_bytes: 20971520
+cors: true
+
+# ---- Reasoning cache ----
+missing_reasoning_strategy: recover
+reasoning_cache_max_age_seconds: 2592000
+reasoning_cache_max_rows: 100000
+
+# ---- PocketBase ----
+pb_data_dir: ./pb_data
+pb_admin_email: admin@admin.com
+pb_admin_password: admin123

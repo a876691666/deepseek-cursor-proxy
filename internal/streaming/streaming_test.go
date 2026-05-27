@@ -1,9 +1,11 @@
 package streaming
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/a876691666/deepseek-cursor-proxy/internal/store"
 )
@@ -11,12 +13,24 @@ import (
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.New(filepath.Join(dir, "cache.sqlite3"), 0, 0)
-	if err != nil {
-		t.Fatalf("store: %v", err)
+	pb := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir:  dir,
+		HideStartBanner: true,
+	})
+	if err := pb.Bootstrap(); err != nil {
+		t.Fatalf("pb: %v", err)
 	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	t.Cleanup(func() { pb.ResetBootstrapState() })
+	if _, err := pb.FindCollectionByNameOrId("reasoning_cache"); err != nil {
+		c := core.NewBaseCollection("reasoning_cache")
+		c.Fields = core.FieldsList{
+			&core.TextField{Name: "key", Required: true},
+			&core.TextField{Name: "reasoning"},
+			&core.TextField{Name: "message_json"},
+		}
+		pb.Save(c)
+	}
+	return store.New(pb, 0, 0)
 }
 
 func TestStreamAccumulatorMergesContent(t *testing.T) {

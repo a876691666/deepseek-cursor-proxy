@@ -1,5 +1,11 @@
 // Package config loads YAML configuration with sensible defaults and supports
 // command-line overrides for the DeepSeek Cursor proxy.
+//
+// Configuration priority (highest to lowest):
+//  1. CLI flags
+//  2. config.yaml
+//  3. Environment variables (DEEPSEEK_API_KEY, PB_ADMIN_EMAIL, PB_ADMIN_PASSWORD, PB_DATA_DIR)
+//  4. Hard-coded defaults
 package config
 
 import (
@@ -15,13 +21,15 @@ import (
 const (
 	AppDirName                = ".deepseek-cursor-proxy"
 	ConfigFileName            = "config.yaml"
-	ReasoningContentFileName  = "reasoning_content.sqlite3"
+	PocketBaseDataDirName     = "pb_data"
 	DefaultHost               = "0.0.0.0"
 	DefaultPort               = 9000
-	DefaultUpstreamBaseURL    = "https://api.deepseek.com"
-	DefaultUpstreamModel      = "deepseek-v4-pro"
-	DefaultThinking           = "enabled"
-	DefaultReasoningEffort    = "high"
+	DefaultUpstreamBaseURL      = "https://api.deepseek.com"
+	DefaultUpstreamModel        = "deepseek-v4-pro"
+	DefaultAnthropicBaseURL     = ""
+	DefaultAnthropicAPIPath     = "/v1/messages"
+	DefaultThinking             = "enabled"
+	DefaultReasoningEffort    = "max"
 	DefaultDisplayReasoning   = true
 	DefaultVerbose            = false
 	DefaultRequestTimeout     = 300.0
@@ -30,20 +38,31 @@ const (
 	DefaultMissingStrategy    = "recover"
 	DefaultCacheMaxAgeSeconds = 30 * 24 * 60 * 60
 	DefaultCacheMaxRows       = 100_000
+	DefaultPBAdminEmail       = "admin@admin.com"
+	DefaultPBAdminPassword    = "admin123"
 )
 
 // DefaultConfigText is written to disk on first run.
-const DefaultConfigText = `# This file was created automatically at ~/.deepseek-cursor-proxy/config.yaml.
-# API keys are read from Cursor's Authorization header and forwarded upstream.
+const DefaultConfigText = `# deepseek-cursor-proxy configuration
+# Values here override environment variables. Use CLI flags for final overrides.
 
-# ` + "`model`" + ` is the fallback when a request has no model; Cursor's requested
-# DeepSeek model name is otherwise respected.
+# ---- Upstream DeepSeek API (OpenAI format) ----
 base_url: https://api.deepseek.com
 model: deepseek-v4-pro
 thinking: enabled
-reasoning_effort: high
+reasoning_effort: max
 display_reasoning: true
 
+# ---- Upstream DeepSeek API (Anthropic format) ----
+# When set, the proxy exposes a /v1/messages endpoint that forwards Anthropic-format
+# requests to this upstream. Leave empty to disable the Anthropic endpoint.
+# anthropic_base_url: https://api.deepseek.com/anthropic
+# anthropic_api_path: /v1/messages
+
+# API key for upstream DeepSeek requests (overrides DEEPSEEK_API_KEY env var).
+# deepseek_api_key: sk-xxx
+
+# ---- Proxy server ----
 host: 0.0.0.0
 port: 9000
 verbose: false
@@ -51,29 +70,39 @@ request_timeout: 300
 max_request_body_bytes: 20971520
 cors: false
 
-reasoning_content_path: reasoning_content.sqlite3
+# ---- Reasoning cache ----
 missing_reasoning_strategy: recover
 reasoning_cache_max_age_seconds: 2592000
 reasoning_cache_max_rows: 100000
+
+# ---- PocketBase ----
+# pb_data_dir: ~/.deepseek-cursor-proxy/pb_data
+# pb_admin_email: admin@admin.com
+# pb_admin_password: admin123
 `
 
 // Config holds resolved proxy settings.
 type Config struct {
 	Host                        string
 	Port                        int
-	UpstreamBaseURL             string
+	UpstreamBaseURL             string // OpenAI-format upstream
 	UpstreamModel               string
+	AnthropicBaseURL            string // Anthropic-format upstream (empty = Anthropic endpoint disabled)
+	AnthropicAPIPath            string // path appended to AnthropicBaseURL (default /v1/messages)
 	Thinking                    string
 	ReasoningEffort             string
 	RequestTimeoutSeconds       float64
 	MaxRequestBodyBytes         int64
-	ReasoningContentPath        string
 	MissingReasoningStrategy    string
 	ReasoningCacheMaxAgeSeconds int64
 	ReasoningCacheMaxRows       int64
 	CursorDisplayReasoning      bool
 	CORS                        bool
 	Verbose                     bool
+	DeepSeekAPIKey              string
+	PBAdminEmail                string
+	PBAdminPassword             string
+	PBDataDir                   string
 }
 
 // rawConfig matches the YAML structure on disk.
@@ -81,6 +110,8 @@ type rawConfig struct {
 	Host                        *string  `yaml:"host"`
 	Port                        *int     `yaml:"port"`
 	BaseURL                     *string  `yaml:"base_url"`
+	AnthropicBaseURL            *string  `yaml:"anthropic_base_url"`
+	AnthropicAPIPath            *string  `yaml:"anthropic_api_path"`
 	Model                       *string  `yaml:"model"`
 	Thinking                    *string  `yaml:"thinking"`
 	ReasoningEffort             *string  `yaml:"reasoning_effort"`
@@ -89,13 +120,15 @@ type rawConfig struct {
 	RequestTimeout              *float64 `yaml:"request_timeout"`
 	MaxRequestBodyBytes         *int64   `yaml:"max_request_body_bytes"`
 	CORS                        *bool    `yaml:"cors"`
-	ReasoningContentPath        *string  `yaml:"reasoning_content_path"`
 	MissingReasoningStrategy    *string  `yaml:"missing_reasoning_strategy"`
 	ReasoningCacheMaxAgeSeconds *int64   `yaml:"reasoning_cache_max_age_seconds"`
 	ReasoningCacheMaxRows       *int64   `yaml:"reasoning_cache_max_rows"`
+	DeepSeekAPIKey              *string  `yaml:"deepseek_api_key"`
+	PBAdminEmail                *string  `yaml:"pb_admin_email"`
+	PBAdminPassword             *string  `yaml:"pb_admin_password"`
+	PBDataDir                   *string  `yaml:"pb_data_dir"`
 }
 
-// DefaultAppDir returns ~/.deepseek-cursor-proxy.
 func DefaultAppDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -104,36 +137,36 @@ func DefaultAppDir() string {
 	return filepath.Join(home, AppDirName)
 }
 
-// DefaultConfigPath returns the default config file location.
 func DefaultConfigPath() string {
 	return filepath.Join(DefaultAppDir(), ConfigFileName)
 }
 
-// DefaultReasoningContentPath returns the default SQLite cache location.
-func DefaultReasoningContentPath() string {
-	return filepath.Join(DefaultAppDir(), ReasoningContentFileName)
+func DefaultPBDataDir() string {
+	return filepath.Join(DefaultAppDir(), PocketBaseDataDirName)
 }
 
-// PopulateDefaultConfigFile writes the default YAML config to disk and applies
-// restrictive permissions.
 func PopulateDefaultConfigFile(path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	_ = os.Chmod(dir, 0o700)
-	if err := os.WriteFile(path, []byte(DefaultConfigText), 0o600); err != nil {
-		return err
-	}
-	return nil
+	return os.WriteFile(path, []byte(DefaultConfigText), 0o600)
 }
 
-// ResolveConfigPath expands ~ in user-supplied paths.
 func ResolveConfigPath(path string) string {
-	if path == "" {
-		return DefaultConfigPath()
+	if path != "" {
+		return expandUser(path)
 	}
-	return expandUser(path)
+	// When no explicit path, check current working directory first,
+	// then fall back to ~/.deepseek-cursor-proxy/config.yaml.
+	if cwd, err := os.Getwd(); err == nil {
+		local := filepath.Join(cwd, ConfigFileName)
+		if _, err := os.Stat(local); err == nil {
+			return local
+		}
+	}
+	return DefaultConfigPath()
 }
 
 func expandUser(path string) string {
@@ -153,12 +186,11 @@ func expandUser(path string) string {
 	return path
 }
 
-// LoadFile loads (and creates if missing) a config file then returns the
-// resolved Config along with the path that was read.
+// LoadFile loads (and creates if missing) a config file, returning the resolved Config.
+// Env vars set default values; YAML overrides them; CLI flags override both.
 func LoadFile(path string) (Config, string, error) {
 	resolved := ResolveConfigPath(path)
-	autoCreate := path == ""
-	if autoCreate {
+	if path == "" {
 		if _, err := os.Stat(resolved); os.IsNotExist(err) {
 			if err := PopulateDefaultConfigFile(resolved); err != nil {
 				return Config{}, resolved, fmt.Errorf("create default config: %w", err)
@@ -183,72 +215,76 @@ func LoadFile(path string) (Config, string, error) {
 	return cfg, resolved, nil
 }
 
-// Defaults returns a Config populated with all default values.
+// Defaults populates Config from constants and environment variables.
 func Defaults() Config {
 	return Config{
 		Host:                        DefaultHost,
 		Port:                        DefaultPort,
 		UpstreamBaseURL:             DefaultUpstreamBaseURL,
 		UpstreamModel:               DefaultUpstreamModel,
+		AnthropicBaseURL:            DefaultAnthropicBaseURL,
+		AnthropicAPIPath:            DefaultAnthropicAPIPath,
 		Thinking:                    DefaultThinking,
 		ReasoningEffort:             DefaultReasoningEffort,
 		RequestTimeoutSeconds:       DefaultRequestTimeout,
 		MaxRequestBodyBytes:         DefaultMaxRequestBody,
-		ReasoningContentPath:        DefaultReasoningContentPath(),
 		MissingReasoningStrategy:    DefaultMissingStrategy,
 		ReasoningCacheMaxAgeSeconds: DefaultCacheMaxAgeSeconds,
 		ReasoningCacheMaxRows:       DefaultCacheMaxRows,
 		CursorDisplayReasoning:      DefaultDisplayReasoning,
 		CORS:                        DefaultCORS,
 		Verbose:                     DefaultVerbose,
+		DeepSeekAPIKey:              envOr("DEEPSEEK_API_KEY", ""),
+		PBAdminEmail:                envOr("PB_ADMIN_EMAIL", DefaultPBAdminEmail),
+		PBAdminPassword:             envOr("PB_ADMIN_PASSWORD", DefaultPBAdminPassword),
+		PBDataDir:                   envOr("PB_DATA_DIR", DefaultPBDataDir()),
 	}
 }
 
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func applyRaw(cfg *Config, raw rawConfig, configDir string) {
-	if raw.Host != nil {
-		cfg.Host = *raw.Host
-	}
-	if raw.Port != nil {
-		cfg.Port = *raw.Port
-	}
+	setIf(&cfg.Host, raw.Host)
+	setIf(&cfg.Port, raw.Port)
 	if raw.BaseURL != nil {
 		cfg.UpstreamBaseURL = strings.TrimRight(*raw.BaseURL, "/")
 	}
-	if raw.Model != nil {
-		cfg.UpstreamModel = *raw.Model
+	if raw.AnthropicBaseURL != nil {
+		cfg.AnthropicBaseURL = strings.TrimRight(*raw.AnthropicBaseURL, "/")
 	}
+	setIf(&cfg.AnthropicAPIPath, raw.AnthropicAPIPath)
+	setIf(&cfg.UpstreamModel, raw.Model)
 	if raw.Thinking != nil {
 		cfg.Thinking = NormalizeThinking(*raw.Thinking)
 	}
-	if raw.ReasoningEffort != nil {
-		cfg.ReasoningEffort = *raw.ReasoningEffort
-	}
-	if raw.DisplayReasoning != nil {
-		cfg.CursorDisplayReasoning = *raw.DisplayReasoning
-	}
-	if raw.Verbose != nil {
-		cfg.Verbose = *raw.Verbose
-	}
-	if raw.RequestTimeout != nil {
-		cfg.RequestTimeoutSeconds = *raw.RequestTimeout
-	}
-	if raw.MaxRequestBodyBytes != nil {
-		cfg.MaxRequestBodyBytes = *raw.MaxRequestBodyBytes
-	}
-	if raw.CORS != nil {
-		cfg.CORS = *raw.CORS
-	}
-	if raw.ReasoningContentPath != nil && *raw.ReasoningContentPath != "" {
-		cfg.ReasoningContentPath = resolvePath(*raw.ReasoningContentPath, configDir)
-	}
+	setIf(&cfg.ReasoningEffort, raw.ReasoningEffort)
+	setIf(&cfg.CursorDisplayReasoning, raw.DisplayReasoning)
+	setIf(&cfg.Verbose, raw.Verbose)
+	setIf(&cfg.RequestTimeoutSeconds, raw.RequestTimeout)
+	setIf(&cfg.MaxRequestBodyBytes, raw.MaxRequestBodyBytes)
+	setIf(&cfg.CORS, raw.CORS)
 	if raw.MissingReasoningStrategy != nil {
 		cfg.MissingReasoningStrategy = NormalizeMissingReasoningStrategy(*raw.MissingReasoningStrategy)
 	}
-	if raw.ReasoningCacheMaxAgeSeconds != nil {
-		cfg.ReasoningCacheMaxAgeSeconds = *raw.ReasoningCacheMaxAgeSeconds
+	setIf(&cfg.ReasoningCacheMaxAgeSeconds, raw.ReasoningCacheMaxAgeSeconds)
+	setIf(&cfg.ReasoningCacheMaxRows, raw.ReasoningCacheMaxRows)
+	// YAML values take priority over env vars.
+	setIf(&cfg.DeepSeekAPIKey, raw.DeepSeekAPIKey)
+	setIf(&cfg.PBAdminEmail, raw.PBAdminEmail)
+	setIf(&cfg.PBAdminPassword, raw.PBAdminPassword)
+	if raw.PBDataDir != nil && *raw.PBDataDir != "" {
+		cfg.PBDataDir = resolvePath(*raw.PBDataDir, configDir)
 	}
-	if raw.ReasoningCacheMaxRows != nil {
-		cfg.ReasoningCacheMaxRows = *raw.ReasoningCacheMaxRows
+}
+
+func setIf[T any](dst *T, src *T) {
+	if src != nil {
+		*dst = *src
 	}
 }
 
@@ -260,7 +296,6 @@ func resolvePath(value, base string) string {
 	return filepath.Join(base, expanded)
 }
 
-// NormalizeThinking maps user-supplied thinking values to the canonical form.
 func NormalizeThinking(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "passthrough", "pass-through", "pass_through":
@@ -273,7 +308,6 @@ func NormalizeThinking(value string) string {
 	return DefaultThinking
 }
 
-// NormalizeMissingReasoningStrategy maps user-supplied strategies to canonical form.
 func NormalizeMissingReasoningStrategy(value string) string {
 	v := strings.ToLower(strings.TrimSpace(value))
 	if v == "recover" || v == "reject" {
@@ -282,7 +316,6 @@ func NormalizeMissingReasoningStrategy(value string) string {
 	return DefaultMissingStrategy
 }
 
-// ParseBool accepts a wider range of truthy/falsey strings than strconv.
 func ParseBool(value string, fallback bool) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "on":

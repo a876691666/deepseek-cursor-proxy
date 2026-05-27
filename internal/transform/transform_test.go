@@ -2,10 +2,12 @@ package transform
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/a876691666/deepseek-cursor-proxy/internal/config"
 	"github.com/a876691666/deepseek-cursor-proxy/internal/store"
@@ -16,12 +18,24 @@ func defaultConfig(t *testing.T) (config.Config, *store.Store) {
 	cfg := config.Defaults()
 	cfg.MissingReasoningStrategy = "recover"
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "cache.sqlite3"), 0, 0)
-	if err != nil {
-		t.Fatalf("store: %v", err)
+	pb := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir:  dir,
+		HideStartBanner: true,
+	})
+	if err := pb.Bootstrap(); err != nil {
+		t.Fatalf("pb: %v", err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
-	return cfg, st
+	t.Cleanup(func() { pb.ResetBootstrapState() })
+	if _, err := pb.FindCollectionByNameOrId("reasoning_cache"); err != nil {
+		c := core.NewBaseCollection("reasoning_cache")
+		c.Fields = core.FieldsList{
+			&core.TextField{Name: "key", Required: true},
+			&core.TextField{Name: "reasoning"},
+			&core.TextField{Name: "message_json"},
+		}
+		pb.Save(c)
+	}
+	return cfg, store.New(pb, 0, 0)
 }
 
 func TestStripCursorThinkingBlocks(t *testing.T) {
@@ -110,7 +124,7 @@ func TestPrepareUpstreamRequestBasic(t *testing.T) {
 	if t2, _ := thinking["type"].(string); t2 != "enabled" {
 		t.Errorf("thinking type: %v", thinking)
 	}
-	if effort := prepared.Payload["reasoning_effort"]; effort != "high" {
+	if effort := prepared.Payload["reasoning_effort"]; effort != "max" {
 		t.Errorf("reasoning_effort: %v", effort)
 	}
 }
@@ -250,6 +264,7 @@ func TestStrictMissingReasoningPropagates(t *testing.T) {
 
 func TestRestoreReasoningFromCache(t *testing.T) {
 	cfg, st := defaultConfig(t)
+	cfg.ReasoningEffort = "high"
 	authorization := "Bearer xyz"
 	upstreamModel := cfg.UpstreamModel
 	thinking := map[string]any{"type": "enabled"}
