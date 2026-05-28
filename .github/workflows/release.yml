@@ -46,11 +46,39 @@ jobs:
           CGO_ENABLED=0 go build -ldflags="-s -w" -o "${BINARY}" ./cmd/deepseek-cursor-proxy/
           echo "binary=${BINARY}" >> "$GITHUB_ENV"
 
-      - name: Upload artifact
+      - name: Build Docker image tarball (linux only)
+        if: matrix.goos == 'linux'
+        run: |
+          cat > Dockerfile.tar <<'DOCKERFILE'
+          FROM alpine:latest
+          RUN apk add --no-cache ca-certificates tzdata && \
+              addgroup -S app && adduser -S -G app app
+          COPY binary /usr/local/bin/deepseek-cursor-proxy
+          USER app
+          EXPOSE 9000
+          HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+              CMD wget -qO- http://127.0.0.1:9000/healthz >/dev/null 2>&1 || exit 1
+          CMD ["/usr/local/bin/deepseek-cursor-proxy", "serve"]
+          DOCKERFILE
+          cp "${{ env.binary }}" binary
+          IMAGE_TAG="deepseek-cursor-proxy:${{ matrix.goarch }}"
+          docker build -f Dockerfile.tar -t "${IMAGE_TAG}" .
+          TARBALL="deepseek-cursor-proxy-docker-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
+          docker save "${IMAGE_TAG}" | gzip > "${TARBALL}"
+          echo "tarball=${TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: "${{ env.binary }}"
           path: "${{ env.binary }}"
+
+      - name: Upload Docker tarball artifact (linux only)
+        if: matrix.goos == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ env.tarball }}"
+          path: "${{ env.tarball }}"
 
   release:
     name: Create GitHub Release
