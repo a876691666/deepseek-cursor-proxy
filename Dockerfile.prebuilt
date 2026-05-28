@@ -1,25 +1,14 @@
-# ---- Build stage ----
-FROM golang:1.25-alpine AS build
-WORKDIR /src
-
-# Cache dependencies first for faster incremental builds.
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copy source and build a statically-linked binary.
-COPY . .
-ENV CGO_ENABLED=0
-RUN go build -trimpath -ldflags="-s -w" -o /out/deepseek-cursor-proxy ./cmd/deepseek-cursor-proxy
-
-# ---- Runtime stage ----
+﻿# ---- Runtime stage (skips Go build, uses pre-built binary) ----
 FROM alpine:latest
+
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S app && adduser -S -G app app && \
     mkdir -p /home/app/.deepseek-cursor-proxy/pb_data && \
     mkdir -p /home/app/.deepseek-cursor-proxy && \
     chown -R app:app /home/app
 
-COPY --from=build /out/deepseek-cursor-proxy /usr/local/bin/deepseek-cursor-proxy
+# Copy pre-built linux/amd64 binary from local build folder
+COPY build/deepseek-cursor-proxy-linux-amd64 /usr/local/bin/deepseek-cursor-proxy
 
 USER app
 WORKDIR /home/app
