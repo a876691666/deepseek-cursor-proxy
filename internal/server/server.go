@@ -1,4 +1,4 @@
-// Package server implements the OpenAI-compatible HTTP proxy integrated with
+﻿// Package server implements the OpenAI-compatible HTTP proxy integrated with
 // PocketBase for API key management and token usage recording.
 package server
 
@@ -97,6 +97,14 @@ func (s *Server) RegisterRoutes(r *router.Router[*core.RequestEvent]) {
 		r.OPTIONS("/v1/messages", s.HandleOptions)
 		r.OPTIONS("/messages", s.HandleOptions)
 	}
+
+	// OpenAI Responses API routes (for Codex CLI compatibility).
+	r.POST("/v1/responses", s.HandleResponses)
+	r.POST("/responses", s.HandleResponses)
+	r.GET("/v1/responses/{response_id}", s.HandleGetResponse)
+	r.GET("/responses/{response_id}", s.HandleGetResponse)
+	r.OPTIONS("/v1/responses", s.HandleOptions)
+	r.OPTIONS("/responses", s.HandleOptions)
 }
 
 // ServeHTTP routes incoming requests (kept for direct http.Handler compatibility).
@@ -371,11 +379,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) e
 	}
 	upstreamReq.Header.Set("Authorization", upstreamAuth)
 	upstreamReq.Header.Set("Content-Type", "application/json")
-	if streamRequested {
-		upstreamReq.Header.Set("Accept", "text/event-stream")
-	} else {
-		upstreamReq.Header.Set("Accept", "application/json")
-	}
+	upstreamReq.Header.Set("Accept", "application/json")
 	upstreamReq.Header.Set("Accept-Encoding", "identity")
 	upstreamReq.Header.Set("User-Agent", "DeepSeekGoProxy/0.1")
 	if v := r.Header.Get("Accept-Language"); v != "" {
@@ -1036,6 +1040,399 @@ func anthropicMessageCount(payload map[string]any) int {
 	return 0
 }
 
+// ---- OpenAI Responses API handlers ----
+
+func (s *Server) HandleResponses(e *core.RequestEvent) error {
+	r := e.Request
+	w := e.Response
+
+	if s.Config.CORS {
+		s.writeCORSHeaders(w)
+	}
+
+	return s.handleResponses(w, r)
+}
+
+func (s *Server) HandleGetResponse(e *core.RequestEvent) error {
+	r := e.Request
+	w := e.Response
+
+	if s.Config.CORS {
+		s.writeCORSHeaders(w)
+	}
+
+	return s.handleGetResponse(w, r)
+}
+
+func (s *Server) handleGetResponse(w http.ResponseWriter, r *http.Request) error {
+
+	// Extract response_id from path: /v1/responses/{response_id}
+	path := strings.TrimPrefix(r.URL.Path, "/v1/responses/")
+	path = strings.TrimPrefix(path, "/responses/")
+	responseID := strings.TrimSpace(path)
+
+	if responseID == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "Missing response_id in path"},
+		})
+		return nil
+	}
+
+	if s.PB == nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": map[string]any{"message": "Response store not available"},
+		})
+		return nil
+	}
+
+	stored, err := pbPkg.GetResponse(s.PB, responseID)
+	if err != nil || stored == nil {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": map[string]any{"message": "Response not found: " + responseID},
+		})
+		return nil
+	}
+
+	s.writeJSON(w, http.StatusOK, stored.Response)
+	return nil
+}
+
+func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) error {
+	started := time.Now()
+	if s.Config.Verbose {
+		s.Logger.Printf(
+			"incoming POST %s (responses) from %s content_length=%s user_agent=%s",
+			r.URL.Path, clientIP(r),
+			r.Header.Get("Content-Length"),
+			r.Header.Get("User-Agent"),
+		)
+	}
+
+	upstreamAuth := s.resolveUpstreamAuth(r)
+	if upstreamAuth == "" {
+		s.Logger.Printf("rejected responses request path=%s status=401 reason=missing_bearer_token", r.URL.Path)
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"error": map[string]any{"message": "Missing Authorization bearer token (set DEEPSEEK_API_KEY env var or provide Bearer token)"},
+		})
+		return nil
+	}
+
+	queryKey := s.extractDistributedKey(r)
+	var apiKeyRecordID string
+	if queryKey != "" && s.PB != nil {
+		record, err := pbPkg.LookupAPIKey(s.PB, queryKey)
+		if err != nil {
+			s.Logger.Printf("api key lookup error: %v", err)
+		}
+		if record != nil {
+			apiKeyRecordID = record.Id
+		}
+	}
+
+	payload, err := s.readJSONBody(r)
+	if err != nil {
+		var tooLarge requestBodyTooLargeError
+		if errors.As(err, &tooLarge) {
+			s.Logger.Printf("rejected responses request path=%s status=413 reason=%s", r.URL.Path, err)
+			s.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+				"error": map[string]any{"message": err.Error()},
+			})
+			return nil
+		}
+		s.Logger.Printf("rejected responses request path=%s status=400 reason=%s", r.URL.Path, err)
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": err.Error()},
+		})
+		return nil
+	}
+
+	responseID := transform.GenerateResponseID()
+	previousResponseID, _ := payload["previous_response_id"].(string)
+	streamRequested, _ := payload["stream"].(bool)
+	model := s.modelName(payload)
+
+	if s.Config.Verbose {
+		s.logJSON("responses request body", payload)
+	}
+
+	// Convert "input" items to Chat messages (Python _input_items_to_messages).
+	inputMessages, convErr := transform.InputItemsToMessages(payload["input"])
+	if convErr != nil {
+		s.Logger.Printf("failed to convert input items: %s", convErr)
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": convErr.Error()},
+		})
+		return nil
+	}
+
+	// Load history from previous_response_id and prepend.
+	var messages []map[string]any
+	if previousResponseID != "" && s.PB != nil {
+		stored, lookupErr := pbPkg.GetResponse(s.PB, previousResponseID)
+		if lookupErr != nil || stored == nil {
+			s.Logger.Printf("previous_response_id not found: %s", previousResponseID)
+			s.writeJSON(w, http.StatusNotFound, map[string]any{
+				"error": map[string]any{"message": "previous_response_id not found: " + previousResponseID},
+			})
+			return nil
+		}
+		messages = append(messages, stored.Messages...)
+		if s.Config.Verbose {
+			s.Logger.Printf("loaded %d messages from previous_response_id=%s",
+				len(stored.Messages), previousResponseID)
+		}
+	}
+	messages = append(messages, inputMessages...)
+
+	// Normalize tools from Responses format to Chat Completions format.
+	rawTools, _ := payload["tools"].([]any)
+	var deepseekTools []map[string]any
+	for _, raw := range rawTools {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		normalized := transform.NormalizeResponsesTool(tool)
+		deepseekTools = append(deepseekTools, normalized...)
+	}
+
+	// Repair assistant messages that lack reasoning_content,
+	// matching Python _repair_thinking_history_messages.
+	if s.Config.Thinking == "enabled" {
+		repairedCount := 0
+		for _, m := range messages {
+			if role, _ := m["role"].(string); role == "assistant" {
+				if _, ok := m["reasoning_content"]; !ok {
+					m["reasoning_content"] = ""
+					repairedCount++
+				}
+			}
+		}
+		if repairedCount > 0 {
+			s.Logger.Printf("responses: repaired %d assistant messages with missing reasoning_content",
+				repairedCount)
+		}
+	}
+
+	// Build a clean Chat Completions payload — matching Python _build_chat_payload.
+	chatPayload := map[string]any{
+		"model":    model,
+		"messages": messages,
+		"stream":   false,
+	}
+	if s.Config.Thinking == "enabled" {
+		chatPayload["thinking"] = map[string]string{"type": "enabled"}
+		chatPayload["reasoning_effort"] = s.Config.ReasoningEffort
+	} else {
+		chatPayload["thinking"] = map[string]string{"type": "disabled"}
+	}
+	if maxTok := payload["max_output_tokens"]; maxTok != nil {
+		chatPayload["max_tokens"] = maxTok
+	} else if maxTok := payload["max_tokens"]; maxTok != nil {
+		chatPayload["max_tokens"] = maxTok
+	}
+	for _, key := range []string{"temperature", "top_p", "stop", "response_format"} {
+		if v, ok := payload[key]; ok && v != nil {
+			chatPayload[key] = v
+		}
+	}
+	if len(deepseekTools) > 0 {
+		chatPayload["tools"] = deepseekTools
+	}
+
+	s.Logger.Printf("responses request: model=%q stream=%v messages=%d tools=%d api_key=%s",
+		model, streamRequested, len(messages), len(deepseekTools), apiKeyRecordID)
+
+	if s.Config.Verbose {
+		s.logJSON("upstream chat payload for responses", chatPayload)
+	}
+
+	upstreamBody, err := json.Marshal(chatPayload)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": map[string]any{"message": "marshal upstream payload: " + err.Error()},
+		})
+		return nil
+	}
+
+	upstreamURL := s.Config.UpstreamBaseURL + "/chat/completions"
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(upstreamBody))
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": map[string]any{"message": err.Error()},
+		})
+		return nil
+	}
+	upstreamReq.Header.Set("Authorization", upstreamAuth)
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	// Always use non-streaming to DeepSeek; we convert the full response
+	// into Responses SSE events ourselves when the client requests stream.
+	if streamRequested {
+		upstreamReq.Header.Set("Accept", "text/event-stream")
+	} else {
+		upstreamReq.Header.Set("Accept", "application/json")
+	}
+	upstreamReq.Header.Set("Accept-Encoding", "identity")
+	upstreamReq.Header.Set("User-Agent", "DeepSeekGoProxy/0.1")
+
+	resp, err := s.Client.Do(upstreamReq)
+	if err != nil {
+		s.Logger.Printf("responses upstream request failed elapsed_ms=%d reason=%s", elapsedMs(started), err)
+		s.writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error": map[string]any{"message": "Upstream request failed: " + err.Error()},
+		})
+		return nil
+	}
+	defer resp.Body.Close()
+	upstreamStatus := resp.StatusCode
+	if s.Config.Verbose {
+		s.Logger.Printf("responses upstream response status=%d stream=%v elapsed_ms=%d", upstreamStatus, streamRequested, elapsedMs(started))
+	}
+
+	if upstreamStatus >= 400 {
+		errBody, _ := readResponseBody(resp)
+		errStr := string(errBody)
+		if len(errStr) > 500 {
+			errStr = errStr[:500]
+		}
+		s.Logger.Printf("responses upstream error status=%d body=%s", upstreamStatus, errStr)
+		s.writeJSON(w, upstreamStatus, map[string]any{
+			"error": map[string]any{"message": fmt.Sprintf("Upstream returned %d: %s", upstreamStatus, errStr)},
+		})
+		return nil
+	}
+
+	// Read full upstream body to convert to Responses format.
+	body, err := readResponseBody(resp)
+	if err != nil {
+		s.Logger.Printf("failed to read responses upstream response: %s", err)
+		s.writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error": map[string]any{"message": "Upstream read failed: " + err.Error()},
+		})
+		return nil
+	}
+
+	var deepseekResponse map[string]any
+	if err := json.Unmarshal(body, &deepseekResponse); err != nil {
+		s.Logger.Printf("failed to parse responses upstream response: %s", err)
+		s.writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error": map[string]any{"message": "Invalid upstream response: " + err.Error()},
+		})
+		return nil
+	}
+
+	// Convert Chat Completions response → Responses API format.
+	responseBody := transform.ToResponse(deepseekResponse, payload, responseID, previousResponseID, model)
+
+	// Cache reasoning_content from the DeepSeek response for later lookups.
+	thinkingCfg := map[string]any{"type": s.Config.Thinking}
+	ns := transform.ReasoningCacheNamespace(s.Config, model, thinkingCfg, s.Config.ReasoningEffort, upstreamAuth)
+	if n := transform.RecordResponseReasoning(deepseekResponse, s.Store, messages, ns); n > 0 {
+		s.Logger.Printf("responses: stored %d reasoning cache entries", n)
+	}
+
+	// Build next history messages for session continuation.
+	choices, _ := deepseekResponse["choices"].([]any)
+	nextMessages := make([]map[string]any, len(messages))
+	copy(nextMessages, messages)
+	if len(choices) > 0 {
+		choice, _ := choices[0].(map[string]any)
+		assistantMessage, _ := choice["message"].(map[string]any)
+		if assistantMessage != nil {
+			historyItem := map[string]any{
+				"role":    "assistant",
+				"content": transform.PlainTextFromContent(assistantMessage["content"]),
+			}
+			if toolCalls, ok := assistantMessage["tool_calls"]; ok {
+				historyItem["tool_calls"] = toolCalls
+			}
+			if rc, ok := assistantMessage["reasoning_content"].(string); ok && rc != "" {
+				historyItem["reasoning_content"] = rc
+			} else if s.Config.Thinking == "enabled" {
+				historyItem["reasoning_content"] = ""
+			}
+			nextMessages = append(nextMessages, historyItem)
+		}
+	}
+	if s.PB != nil {
+		if saveErr := pbPkg.SaveResponse(s.PB, responseID, responseBody, nextMessages, model); saveErr != nil {
+			s.Logger.Printf("failed to save response: %s", saveErr)
+		}
+	}
+
+	// Record token usage.
+	if queryKey != "" {
+		if u, ok := deepseekResponse["usage"].(map[string]any); ok {
+			usage := &usageInfo{}
+			if v, ok := u["prompt_tokens"].(float64); ok {
+				usage.PromptTokens = int(v)
+			}
+			if v, ok := u["completion_tokens"].(float64); ok {
+				usage.CompletionTokens = int(v)
+			}
+			if v, ok := u["total_tokens"].(float64); ok {
+				usage.TotalTokens = int(v)
+			}
+			s.recordUsage(queryKey, model, usage)
+		}
+	}
+
+	if streamRequested {
+		s.proxyResponsesStreaming(w, responseBody, queryKey, model)
+	} else {
+		s.proxyResponsesRegular(w, responseBody)
+	}
+
+	s.Logger.Printf(
+		"responses request complete status=%d stream=%v elapsed_ms=%d api_key=%s response_id=%s",
+		upstreamStatus, streamRequested, elapsedMs(started), apiKeyRecordID, responseID,
+	)
+	return nil
+}
+
+func (s *Server) proxyResponsesRegular(w http.ResponseWriter, responseBody map[string]any) {
+	body, err := json.Marshal(responseBody)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": map[string]any{"message": "marshal response: " + err.Error()},
+		})
+		return
+	}
+	s.writeCORSHeaders(w)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+func (s *Server) proxyResponsesStreaming(w http.ResponseWriter, responseBody map[string]any, queryKey, modelName string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		s.Logger.Printf("response writer does not support streaming flush")
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": map[string]any{"message": "streaming not supported"},
+		})
+		return
+	}
+
+	s.writeCORSHeaders(w)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "close")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	events := transform.BuildResponsesStreamEvents(responseBody)
+	for _, ev := range events {
+		data := transform.FormatSSEEvent(ev)
+		if _, werr := w.Write(data); werr != nil {
+			s.Logger.Printf("client disconnected while writing responses stream: %s", werr)
+			return
+		}
+		flusher.Flush()
+	}
+}
+
 // ---- Legacy http.Handler methods (keep for compatibility) ----
 
 func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
@@ -1056,6 +1453,11 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	case "/models", "/v1/models":
 		s.writeModels(w)
 	default:
+		// Handle /v1/responses/{id} and /responses/{id}
+		if strings.HasPrefix(r.URL.Path, "/v1/responses/") || strings.HasPrefix(r.URL.Path, "/responses/") {
+			_ = s.handleGetResponse(w, r)
+			return
+		}
 		s.writeJSON(w, http.StatusNotFound, map[string]any{
 			"error": map[string]any{"message": "Not found"},
 		})
@@ -1072,9 +1474,13 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		s.handleMessages(w, r)
 		return
 	}
+	if r.URL.Path == "/v1/responses" || r.URL.Path == "/responses" {
+		s.handleResponses(w, r)
+		return
+	}
 	s.Logger.Printf("rejected unsupported POST path=%s status=404", r.URL.Path)
 	s.writeJSON(w, http.StatusNotFound, map[string]any{
-		"error": map[string]any{"message": "Only /v1/chat/completions and /v1/messages are supported"},
+		"error": map[string]any{"message": "Only /v1/chat/completions, /v1/messages, and /v1/responses are supported"},
 	})
 }
 

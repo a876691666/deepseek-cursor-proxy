@@ -51,8 +51,8 @@ func (c *StreamingChoice) ToMessage() map[string]any {
 // StreamAccumulator merges streaming chunks into per-choice state and tracks
 // which choices have already had their reasoning persisted.
 type StreamAccumulator struct {
-	Choices        map[int]*StreamingChoice
-	storedChoices  map[int]string // index -> stored stage ("tool_call" | "final")
+	Choices       map[int]*StreamingChoice
+	storedChoices map[int]string // index -> stored stage ("tool_call" | "final")
 }
 
 // NewStreamAccumulator returns a fresh accumulator.

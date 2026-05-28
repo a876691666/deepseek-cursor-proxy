@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(go build -trimpath -ldflags=\"-s -w\" -o deepseek-cursor-proxy.exe ./cmd/deepseek-cursor-proxy)",
-      "PowerShell(if \\(Test-Path deepseek-cursor-proxy.exe\\) { $f = Get-Item deepseek-cursor-proxy.exe; Write-Host \"EXE: $\\($f.FullName\\)\"; Write-Host \"Size: $\\([math]::Round\\($f.Length/1MB, 2\\)\\) MB\" } else { Write-Host \"exe not found\" })"
-    ]
-  }
-}

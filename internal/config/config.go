@@ -24,11 +24,11 @@ const (
 	PocketBaseDataDirName     = "pb_data"
 	DefaultHost               = "0.0.0.0"
 	DefaultPort               = 9000
-	DefaultUpstreamBaseURL      = "https://api.deepseek.com"
-	DefaultUpstreamModel        = "deepseek-v4-pro"
-	DefaultAnthropicBaseURL     = ""
-	DefaultAnthropicAPIPath     = "/v1/messages"
-	DefaultThinking             = "enabled"
+	DefaultUpstreamBaseURL    = "https://api.deepseek.com"
+	DefaultUpstreamModel      = "deepseek-v4-pro"
+	DefaultAnthropicBaseURL   = ""
+	DefaultAnthropicAPIPath   = "/v1/messages"
+	DefaultThinking           = "enabled"
 	DefaultReasoningEffort    = "max"
 	DefaultDisplayReasoning   = true
 	DefaultVerbose            = false

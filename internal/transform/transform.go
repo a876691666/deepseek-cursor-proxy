@@ -76,15 +76,15 @@ var cursorThinkingBlockRE = regexp.MustCompile(`(?i)<(?:think|thinking)>[\s\S]*?
 
 // PreparedRequest is the result of normalizing a Cursor request for upstream forwarding.
 type PreparedRequest struct {
-	Payload                      map[string]any
-	OriginalModel                string
-	UpstreamModel                string
-	CacheNamespace               string
-	PatchedReasoningMessages     int
-	MissingReasoningMessages     int
-	RecoveredReasoningMessages   int
-	RecoveryDroppedMessages      int
-	RecoveryNotice               string // empty when no client-visible notice required
+	Payload                    map[string]any
+	OriginalModel              string
+	UpstreamModel              string
+	CacheNamespace             string
+	PatchedReasoningMessages   int
+	MissingReasoningMessages   int
+	RecoveredReasoningMessages int
+	RecoveryDroppedMessages    int
+	RecoveryNotice             string // empty when no client-visible notice required
 }
 
 // NormalizeReasoningEffort maps user-supplied effort to canonical alias.
@@ -286,7 +286,7 @@ func normalizeMessage(
 		}
 	}
 
-	if rawCalls, ok := out["tool_calls"].([]any); ok && len(rawCalls) > 0 {
+	if rawCalls := normalizeToolCallList(out["tool_calls"]); len(rawCalls) > 0 {
 		converted := make([]any, 0, len(rawCalls))
 		for _, tc := range rawCalls {
 			converted = append(converted, normalizeToolCall(tc))
@@ -299,10 +299,10 @@ func normalizeMessage(
 			delete(out, "reasoning_content")
 		} else if repairReasoning {
 			reasoning, ok := out["reasoning_content"].(string)
-			if !ok || reasoning == "" && !ok {
+			if !ok || reasoning == "" {
 				delete(out, "reasoning_content")
 			}
-			if !ok {
+			if !ok || reasoning == "" {
 				needs := assistantNeedsReasoningForToolContext(out, priorMessages)
 				if needs && st != nil {
 					scope := store.ConversationScope(priorMessages, cacheNamespace)
@@ -331,8 +331,36 @@ func normalizeMessage(
 	return filtered, patched, missing
 }
 
+// toolCallCount returns the number of tool calls in v, which may be
+// []any or []map[string]any (both representations occur depending on
+// whether the message came from JSON unmarshaling or direct construction).
+func toolCallCount(v any) int {
+	switch calls := v.(type) {
+	case []any:
+		return len(calls)
+	case []map[string]any:
+		return len(calls)
+	}
+	return 0
+}
+
+// normalizeToolCallList converts v to []any regardless of its original slice type.
+func normalizeToolCallList(v any) []any {
+	switch calls := v.(type) {
+	case []any:
+		return calls
+	case []map[string]any:
+		out := make([]any, len(calls))
+		for i, c := range calls {
+			out[i] = c
+		}
+		return out
+	}
+	return nil
+}
+
 func assistantNeedsReasoningForToolContext(message map[string]any, priorMessages []map[string]any) bool {
-	if calls, ok := message["tool_calls"].([]any); ok && len(calls) > 0 {
+	if toolCallCount(message["tool_calls"]) > 0 {
 		return true
 	}
 	for i := len(priorMessages) - 1; i >= 0; i-- {
@@ -393,9 +421,9 @@ func leadingSystemMessages(messages []map[string]any) []map[string]any {
 	return out
 }
 
-// recoverMessagesFromMissingReasoning produces a recovered message list,
+// RecoverMessagesFromMissingReasoning produces a recovered message list,
 // returning the number of dropped messages and an optional client-visible notice.
-func recoverMessagesFromMissingReasoning(
+func RecoverMessagesFromMissingReasoning(
 	messages []map[string]any,
 	missingIndexes []int,
 ) (recovered []map[string]any, dropped int, notice string) {
@@ -456,7 +484,7 @@ func recoverMessagesFromMissingReasoning(
 }
 
 func upstreamModelFor(originalModel string, cfg config.Config) string {
-	if strings.HasPrefix(originalModel, "deepseek-") {
+	if originalModel == "deepseek-v4-pro" || originalModel == "deepseek-v4-flash" {
 		return originalModel
 	}
 	return cfg.UpstreamModel
@@ -574,7 +602,7 @@ func PrepareUpstreamRequest(
 	recoveryDropped := 0
 	var recoveryNotice string
 	for len(missingIndexes) > 0 && cfg.MissingReasoningStrategy == "recover" {
-		recoveredMessages, dropped, notice := recoverMessagesFromMissingReasoning(messages, missingIndexes)
+		recoveredMessages, dropped, notice := RecoverMessagesFromMissingReasoning(messages, missingIndexes)
 		if dropped == 0 {
 			break
 		}

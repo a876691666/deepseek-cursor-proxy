@@ -193,7 +193,7 @@ func NormalizeToolCall(call map[string]any) map[string]any {
 		typ = "function"
 	}
 	return map[string]any{
-		"id": id,
+		"id":   id,
 		"type": typ,
 		"function": map[string]any{
 			"name":      name,

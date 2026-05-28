@@ -5,6 +5,7 @@ package pocketbase
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -20,6 +21,7 @@ const (
 	CollectionAPIKeys        = "api_keys"
 	CollectionTokenUsage     = "token_usage"
 	CollectionReasoningCache = "reasoning_cache"
+	CollectionResponseStore  = "response_store"
 )
 
 //nolint:unused
@@ -55,10 +57,10 @@ func Setup(cfg config.Config) (*pocketbase.PocketBase, error) {
 }
 
 type collectionDef struct {
-	name      string
-	fields    core.FieldsList
-	listRule  *string
-	viewRule  *string
+	name       string
+	fields     core.FieldsList
+	listRule   *string
+	viewRule   *string
 	createRule *string
 	updateRule *string
 	deleteRule *string
@@ -96,6 +98,17 @@ func allCollections() []collectionDef {
 				&core.TextField{Name: "key", Required: true},
 				&core.TextField{Name: "reasoning"},
 				&core.TextField{Name: "message_json"},
+			},
+			listRule: superuserOnly, viewRule: superuserOnly,
+			createRule: ns(""), updateRule: ns(""), deleteRule: superuserOnly,
+		},
+		{
+			name: CollectionResponseStore,
+			fields: core.FieldsList{
+				&core.TextField{Name: "response_id", Required: true},
+				&core.TextField{Name: "response_json"},
+				&core.TextField{Name: "messages_json"},
+				&core.TextField{Name: "model"},
 			},
 			listRule: superuserOnly, viewRule: superuserOnly,
 			createRule: ns(""), updateRule: ns(""), deleteRule: superuserOnly,
@@ -193,4 +206,53 @@ func RecordTokenUsage(app core.App, apiKey, model string, promptTokens, completi
 	r.Set("total_tokens", totalTokens)
 	r.Set("recorded_at", recordedAt.UTC().Format(time.RFC3339))
 	return app.Save(r)
+}
+
+// StoredResponse holds a cached response for session continuation.
+type StoredResponse struct {
+	ResponseID string
+	Response   map[string]any
+	Messages   []map[string]any
+	Model      string
+}
+
+// SaveResponse stores a Responses API response for future previous_response_id lookups.
+func SaveResponse(app core.App, responseID string, response map[string]any, messages []map[string]any, model string) error {
+	c, err := app.FindCollectionByNameOrId(CollectionResponseStore)
+	if err != nil {
+		return err
+	}
+	rec, findErr := app.FindFirstRecordByData(CollectionResponseStore, "response_id", responseID)
+	if findErr != nil {
+		rec = core.NewRecord(c)
+	}
+	rec.Set("response_id", responseID)
+	respJSON, _ := json.Marshal(response)
+	msgJSON, _ := json.Marshal(messages)
+	rec.Set("response_json", string(respJSON))
+	rec.Set("messages_json", string(msgJSON))
+	rec.Set("model", model)
+	return app.Save(rec)
+}
+
+// GetResponse retrieves a stored response by ID.
+func GetResponse(app core.App, responseID string) (*StoredResponse, error) {
+	rec, err := app.FindFirstRecordByData(CollectionResponseStore, "response_id", responseID)
+	if err != nil || rec == nil {
+		return nil, err
+	}
+	var resp map[string]any
+	var msgs []map[string]any
+	if s := rec.GetString("response_json"); s != "" {
+		json.Unmarshal([]byte(s), &resp)
+	}
+	if s := rec.GetString("messages_json"); s != "" {
+		json.Unmarshal([]byte(s), &msgs)
+	}
+	return &StoredResponse{
+		ResponseID: rec.GetString("response_id"),
+		Response:   resp,
+		Messages:   msgs,
+		Model:      rec.GetString("model"),
+	}, nil
 }
