@@ -34,7 +34,7 @@ const (
 	DefaultVerbose            = false
 	DefaultRequestTimeout     = 300.0
 	DefaultMaxRequestBody     = 20 * 1024 * 1024
-	DefaultCORS               = false
+	DefaultCORS               = true
 	DefaultMissingStrategy    = "recover"
 	DefaultCacheMaxAgeSeconds = 30 * 24 * 60 * 60
 	DefaultCacheMaxRows       = 100_000
@@ -49,15 +49,15 @@ const DefaultConfigText = `# deepseek-cursor-proxy configuration
 # ---- Upstream DeepSeek API (OpenAI format) ----
 base_url: https://api.deepseek.com
 model: deepseek-v4-pro
+
+# ---- Upstream DeepSeek API (Anthropic format) ----
+# Enable the following to expose a /v1/messages endpoint that forwards
+# Anthropic-format requests to the DeepSeek Anthropic API.
+anthropic_base_url: https://api.deepseek.com/anthropic
+anthropic_api_path: /v1/messages
 thinking: enabled
 reasoning_effort: max
 display_reasoning: true
-
-# ---- Upstream DeepSeek API (Anthropic format) ----
-# When set, the proxy exposes a /v1/messages endpoint that forwards Anthropic-format
-# requests to this upstream. Leave empty to disable the Anthropic endpoint.
-# anthropic_base_url: https://api.deepseek.com/anthropic
-# anthropic_api_path: /v1/messages
 
 # API key for upstream DeepSeek requests (overrides DEEPSEEK_API_KEY env var).
 # deepseek_api_key: sk-xxx
@@ -68,7 +68,7 @@ port: 9000
 verbose: false
 request_timeout: 300
 max_request_body_bytes: 20971520
-cors: false
+cors: true
 
 # ---- Reasoning cache ----
 missing_reasoning_strategy: recover
@@ -76,9 +76,9 @@ reasoning_cache_max_age_seconds: 2592000
 reasoning_cache_max_rows: 100000
 
 # ---- PocketBase ----
-# pb_data_dir: ~/.deepseek-cursor-proxy/pb_data
-# pb_admin_email: admin@admin.com
-# pb_admin_password: admin123
+pb_data_dir: ./pb_data
+pb_admin_email: admin@admin.com
+pb_admin_password: admin123
 `
 
 // Config holds resolved proxy settings.

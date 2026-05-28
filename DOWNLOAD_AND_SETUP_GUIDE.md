@@ -99,7 +99,7 @@ cors: true
 
 # ---- PocketBase 管理后台 ----
 pb_data_dir: ./pb_data
-pb_admin_email: admin@dcp.com
+pb_admin_email: admin@admin.com
 pb_admin_password: admin123
 ```
 
@@ -155,7 +155,7 @@ http://localhost:9000/_/
 
 用 `config.yaml` 里配的账号密码登录：
 
-- 邮箱：`admin@dcp.com`（或你改过的）
+- 邮箱：`admin@admin.com`（或你改过的）
 - 密码：`admin123`（或你改过的）
 
 ### 6.3 创建 Key
