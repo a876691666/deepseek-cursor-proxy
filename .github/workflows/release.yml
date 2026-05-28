@@ -1,0 +1,72 @@
+﻿name: Release
+
+# Build cross-platform binaries on tag push or manual trigger,
+# then create a GitHub Release with all artifacts.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: "Build (${{ matrix.goos }}/${{ matrix.goarch }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: windows, goarch: amd64,  ext: .exe }
+          - { goos: windows, goarch: arm64,  ext: .exe }
+          - { goos: linux,   goarch: amd64,  ext: ""    }
+          - { goos: linux,   goarch: arm64,  ext: ""    }
+          - { goos: darwin,  goarch: amd64,  ext: ""    }
+          - { goos: darwin,  goarch: arm64,  ext: ""    }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          check-latest: true
+
+      - name: Build binary
+        env:
+          GOOS: "${{ matrix.goos }}"
+          GOARCH: "${{ matrix.goarch }}"
+        run: |
+          BINARY="deepseek-cursor-proxy-${GOOS}-${GOARCH}${{ matrix.ext }}"
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o "${BINARY}" ./cmd/deepseek-cursor-proxy/
+          echo "binary=${BINARY}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ env.binary }}"
+          path: "${{ env.binary }}"
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show dist
+        run: ls -lh dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
