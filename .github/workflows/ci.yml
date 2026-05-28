@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -48,6 +49,19 @@ jobs:
 
       - name: Test
         run: go test -race -count=1 ./...
+
+      - name: Build binary for artifact
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        run: |
+          mkdir -p build
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o build/deepseek-cursor-proxy-linux-amd64 ./cmd/deepseek-cursor-proxy/
+
+      - name: Upload artifact
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-cursor-proxy-linux-amd64-${{ github.sha }}
+          path: build/deepseek-cursor-proxy-linux-amd64
 
   docker-build:
     name: Docker image build

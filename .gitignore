@@ -31,3 +31,4 @@ reasoning_content.sqlite3*
 pb_data
 config.yaml
 .claude
+deepseek-proxy-runtime
