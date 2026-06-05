@@ -1753,9 +1753,6 @@ func injectRecoveryNotice(chunk map[string]any, notice string) bool {
 }
 
 func recoveryNoticeChunk(model, notice string) map[string]any {
-	if notice == "" {
-		notice = transform.RecoveryNoticeContent
-	}
 	return map[string]any{
 		"id":      "chatcmpl-deepseek-cursor-proxy-recovery",
 		"object":  "chat.completion.chunk",

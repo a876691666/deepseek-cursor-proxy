@@ -4,14 +4,8 @@ package streaming
 
 import (
 	"sort"
-	"time"
 
 	"github.com/a876691666/deepseek-cursor-proxy/internal/store"
-)
-
-const (
-	thinkingBlockStart = "<think>\n"
-	thinkingBlockEnd   = "\n</think>\n\n"
 )
 
 // StreamingChoice is the per-index assistant accumulator for streamed deltas.
@@ -246,140 +240,23 @@ func jsonString(v any) string {
 	}
 }
 
-// CursorReasoningDisplayAdapter mirrors `reasoning_content` chunks into the
-// `content` channel using <think>…</think> blocks so Cursor can render them.
-type CursorReasoningDisplayAdapter struct {
-	openChoices       map[int]struct{}
-	lastChunkMetadata map[string]any
-}
+// CursorReasoningDisplayAdapter is a pass-through adapter that preserves
+// reasoning_content in its own delta field so downstream clients (GitHub
+// Copilot, Claude, etc.) can correctly identify the thinking process.
+// The old <think>…</think> wrapping into the content channel has been
+// removed because it was Cursor-specific and confused other clients.
+type CursorReasoningDisplayAdapter struct{}
 
 // NewCursorReasoningDisplayAdapter returns a new adapter ready for use.
 func NewCursorReasoningDisplayAdapter() *CursorReasoningDisplayAdapter {
-	return &CursorReasoningDisplayAdapter{
-		openChoices:       map[int]struct{}{},
-		lastChunkMetadata: map[string]any{},
-	}
+	return &CursorReasoningDisplayAdapter{}
 }
 
-// RewriteChunk mutates the chunk in place to mirror reasoning content into the
-// content delta stream.
-func (a *CursorReasoningDisplayAdapter) RewriteChunk(chunk map[string]any) {
-	a.rememberChunkMetadata(chunk)
-	rawChoices, ok := chunk["choices"].([]any)
-	if !ok {
-		return
-	}
-	for _, raw := range rawChoices {
-		rawChoice, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		index := chunkIndex(rawChoice)
-		delta, ok := rawChoice["delta"].(map[string]any)
-		if !ok {
-			delta = map[string]any{}
-			rawChoice["delta"] = delta
-		}
-		var mirroredParts []string
-		reasoning, _ := delta["reasoning_content"].(string)
-		if reasoning != "" {
-			if _, open := a.openChoices[index]; !open {
-				mirroredParts = append(mirroredParts, thinkingBlockStart)
-				a.openChoices[index] = struct{}{}
-			}
-			mirroredParts = append(mirroredParts, reasoning)
-		}
-		existingContent, hasContent := delta["content"].(string)
-		_, openNow := a.openChoices[index]
-		shouldClose := openNow && (hasContent && existingContent != "" || hasNonEmptyToolCalls(delta) || hasNonEmptyFinishReason(rawChoice))
-		if shouldClose {
-			mirroredParts = append(mirroredParts, thinkingBlockEnd)
-			delete(a.openChoices, index)
-		}
-		if len(mirroredParts) == 0 {
-			continue
-		}
-		if hasContent {
-			mirroredParts = append(mirroredParts, existingContent)
-		}
-		delta["content"] = joinParts(mirroredParts)
-	}
-}
+// RewriteChunk is a no-op pass-through. reasoning_content is left in its
+// own delta field so downstream clients can identify the thinking process.
+func (a *CursorReasoningDisplayAdapter) RewriteChunk(chunk map[string]any) {}
 
-// FlushChunk produces a closing chunk for any open thinking blocks. Returns
-// nil if there is nothing to flush.
+// FlushChunk always returns nil — no <think> closing chunks are needed.
 func (a *CursorReasoningDisplayAdapter) FlushChunk(model string) map[string]any {
-	if len(a.openChoices) == 0 {
-		return nil
-	}
-	indexes := make([]int, 0, len(a.openChoices))
-	for i := range a.openChoices {
-		indexes = append(indexes, i)
-	}
-	sort.Ints(indexes)
-	choices := make([]any, 0, len(indexes))
-	for _, i := range indexes {
-		choices = append(choices, map[string]any{
-			"index":         i,
-			"delta":         map[string]any{"content": thinkingBlockEnd},
-			"finish_reason": nil,
-		})
-	}
-	a.openChoices = map[int]struct{}{}
-	id, _ := a.lastChunkMetadata["id"].(string)
-	if id == "" {
-		id = "chatcmpl-reasoning-close"
-	}
-	object, _ := a.lastChunkMetadata["object"].(string)
-	if object == "" {
-		object = "chat.completion.chunk"
-	}
-	created, ok := a.lastChunkMetadata["created"]
-	if !ok {
-		created = time.Now().Unix()
-	}
-	return map[string]any{
-		"id":      id,
-		"object":  object,
-		"created": created,
-		"model":   model,
-		"choices": choices,
-	}
-}
-
-func (a *CursorReasoningDisplayAdapter) rememberChunkMetadata(chunk map[string]any) {
-	for _, key := range []string{"id", "object", "created"} {
-		if v, ok := chunk[key]; ok {
-			a.lastChunkMetadata[key] = v
-		}
-	}
-}
-
-func hasNonEmptyToolCalls(delta map[string]any) bool {
-	if calls, ok := delta["tool_calls"].([]any); ok {
-		return len(calls) > 0
-	}
-	return false
-}
-
-func hasNonEmptyFinishReason(rawChoice map[string]any) bool {
-	if v, ok := rawChoice["finish_reason"]; ok && v != nil {
-		if s, ok := v.(string); ok {
-			return s != ""
-		}
-		return true
-	}
-	return false
-}
-
-func joinParts(parts []string) string {
-	total := 0
-	for _, p := range parts {
-		total += len(p)
-	}
-	out := make([]byte, 0, total)
-	for _, p := range parts {
-		out = append(out, p...)
-	}
-	return string(out)
+	return nil
 }

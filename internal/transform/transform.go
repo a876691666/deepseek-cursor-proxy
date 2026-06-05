@@ -402,11 +402,19 @@ func NormalizeMessages(
 }
 
 func hasRecoveryNotice(message map[string]any) bool {
-	if role, _ := message["role"].(string); role != "assistant" {
-		return false
+	if role, _ := message["role"].(string); role == "assistant" {
+		content, _ := message["content"].(string)
+		if strings.HasPrefix(content, RecoveryNoticeText) || strings.HasPrefix(content, LegacyRecoveryNoticeText) {
+			return true
+		}
 	}
-	content, _ := message["content"].(string)
-	return strings.HasPrefix(content, RecoveryNoticeText) || strings.HasPrefix(content, LegacyRecoveryNoticeText)
+	if role, _ := message["role"].(string); role == "system" {
+		content, _ := message["content"].(string)
+		if strings.TrimSpace(content) == strings.TrimSpace(RecoverySystemContent) {
+			return true
+		}
+	}
+	return false
 }
 
 func leadingSystemMessages(messages []map[string]any) []map[string]any {
@@ -480,7 +488,7 @@ func RecoverMessagesFromMissingReasoning(
 	dropped = len(messages) - len(recovered) - 1
 	recovered = append(recovered, map[string]any{"role": "system", "content": RecoverySystemContent})
 	recovered = append(recovered, messages[lastUserIndex])
-	return recovered, dropped, RecoveryNoticeContent
+	return recovered, dropped, ""
 }
 
 func upstreamModelFor(originalModel string, cfg config.Config) string {

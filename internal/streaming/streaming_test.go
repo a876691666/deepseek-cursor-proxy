@@ -1,7 +1,6 @@
 package streaming
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/pocketbase/pocketbase"
@@ -173,7 +172,7 @@ func TestStreamAccumulatorStoresOnIdentifiedToolCalls(t *testing.T) {
 	}
 }
 
-func TestCursorReasoningDisplayAdapterOpensAndClosesBlock(t *testing.T) {
+func TestCursorReasoningDisplayAdapterPassThrough(t *testing.T) {
 	a := NewCursorReasoningDisplayAdapter()
 	chunk := map[string]any{
 		"id": "x",
@@ -188,11 +187,17 @@ func TestCursorReasoningDisplayAdapterOpensAndClosesBlock(t *testing.T) {
 	choices, _ := chunk["choices"].([]any)
 	first, _ := choices[0].(map[string]any)
 	delta, _ := first["delta"].(map[string]any)
-	content, _ := delta["content"].(string)
-	if !strings.HasPrefix(content, "<think>") || !strings.Contains(content, "thinking...") {
-		t.Errorf("expected open think block in content, got %q", content)
+
+	// reasoning_content should pass through unchanged.
+	if rc, _ := delta["reasoning_content"].(string); rc != "thinking..." {
+		t.Errorf("expected reasoning_content to pass through, got %q", rc)
+	}
+	// content should not be polluted with <think> tags.
+	if c, ok := delta["content"].(string); ok {
+		t.Errorf("expected no content delta when only reasoning is present, got %q", c)
 	}
 
+	// Normal content should pass through untouched.
 	chunk2 := map[string]any{
 		"choices": []any{
 			map[string]any{
@@ -204,39 +209,17 @@ func TestCursorReasoningDisplayAdapterOpensAndClosesBlock(t *testing.T) {
 	a.RewriteChunk(chunk2)
 	c2, _ := chunk2["choices"].([]any)
 	d2, _ := c2[0].(map[string]any)["delta"].(map[string]any)
-	cText := d2["content"].(string)
-	if !strings.Contains(cText, "</think>") {
-		t.Errorf("expected closing block, got %q", cText)
-	}
-	if !strings.Contains(cText, "real answer") {
-		t.Errorf("expected answer preserved, got %q", cText)
+	cText, _ := d2["content"].(string)
+	if cText != "real answer" {
+		t.Errorf("expected content to pass through unchanged, got %q", cText)
 	}
 }
 
 func TestCursorReasoningDisplayAdapterFlushChunk(t *testing.T) {
 	a := NewCursorReasoningDisplayAdapter()
-	a.RewriteChunk(map[string]any{
-		"id":      "X",
-		"created": 100,
-		"choices": []any{
-			map[string]any{
-				"index": float64(0),
-				"delta": map[string]any{"reasoning_content": "stuff"},
-			},
-		},
-	})
+	// FlushChunk always returns nil since <think> wrapping is removed.
 	closing := a.FlushChunk("rebrand")
-	if closing == nil {
-		t.Fatalf("expected flush chunk for open block")
-	}
-	if closing["model"] != "rebrand" {
-		t.Errorf("model: %v", closing["model"])
-	}
-	choices, _ := closing["choices"].([]any)
-	if len(choices) != 1 {
-		t.Errorf("choices: %v", choices)
-	}
-	if a.FlushChunk("rebrand") != nil {
-		t.Errorf("expected nil after flush")
+	if closing != nil {
+		t.Fatalf("expected nil flush chunk")
 	}
 }

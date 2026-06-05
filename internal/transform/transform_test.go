@@ -216,8 +216,8 @@ func TestRecoverFromMissingReasoning(t *testing.T) {
 	if prepared.RecoveredReasoningMessages == 0 {
 		t.Errorf("expected recovered count > 0")
 	}
-	if prepared.RecoveryNotice == "" {
-		t.Errorf("expected recovery notice for first-time recovery")
+	if prepared.RecoveryNotice != "" {
+		t.Errorf("expected empty recovery notice, got %q", prepared.RecoveryNotice)
 	}
 	messages, _ := prepared.Payload["messages"].([]any)
 	// Should keep system, then recovery system, then last user only.
