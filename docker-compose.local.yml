@@ -13,7 +13,7 @@ services:
       TZ: ${TZ:-UTC}
     volumes:
       # Persist the SQLite reasoning cache + PocketBase data across restarts.
-      - ./data:/home/app/.deepseek-cursor-proxy
+      - ./pb_data:/home/app/.deepseek-cursor-proxy
       # Mount local config.yaml into container.
       - ./config.yaml:/home/app/config.yaml:ro
       - ./config.yaml:/home/app/.deepseek-cursor-proxy/config.yaml
@@ -23,6 +23,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
-
-volumes:
-  deepseek-cursor-proxy-data:
