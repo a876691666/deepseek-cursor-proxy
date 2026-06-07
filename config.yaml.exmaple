@@ -29,6 +29,11 @@ missing_reasoning_strategy: recover
 reasoning_cache_max_age_seconds: 2592000
 reasoning_cache_max_rows: 100000
 
+# ---- Retry ----
+# Number of times to retry upstream requests on failure (network errors or 5xx).
+# Set to 0 to disable retries.
+retry_count: 0
+
 # ---- PocketBase ----
 pb_data_dir: ./pb_data
 pb_admin_email: admin@admin.com

@@ -2,7 +2,7 @@ services:
   deepseek-cursor-proxy:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.prebuilt
     image: deepseek-cursor-proxy:latest
     container_name: deepseek-cursor-proxy
     restart: unless-stopped
@@ -13,7 +13,7 @@ services:
       TZ: ${TZ:-UTC}
     volumes:
       # Persist the SQLite reasoning cache + PocketBase data across restarts.
-      - deepseek-cursor-proxy-data:/home/app/.deepseek-cursor-proxy
+      - ./data:/home/app/.deepseek-cursor-proxy
       # Mount local config.yaml into container.
       - ./config.yaml:/home/app/config.yaml:ro
       - ./config.yaml:/home/app/.deepseek-cursor-proxy/config.yaml

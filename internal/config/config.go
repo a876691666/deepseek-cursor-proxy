@@ -38,6 +38,7 @@ const (
 	DefaultMissingStrategy    = "recover"
 	DefaultCacheMaxAgeSeconds = 30 * 24 * 60 * 60
 	DefaultCacheMaxRows       = 100_000
+	DefaultRetryCount         = 0
 	DefaultPBAdminEmail       = "admin@admin.com"
 	DefaultPBAdminPassword    = "admin123"
 )
@@ -75,6 +76,10 @@ missing_reasoning_strategy: recover
 reasoning_cache_max_age_seconds: 2592000
 reasoning_cache_max_rows: 100000
 
+# ---- Retry ----
+# Number of times to retry upstream requests on failure (network errors or 5xx).
+retry_count: 0
+
 # ---- PocketBase ----
 pb_data_dir: ./pb_data
 pb_admin_email: admin@admin.com
@@ -96,6 +101,7 @@ type Config struct {
 	MissingReasoningStrategy    string
 	ReasoningCacheMaxAgeSeconds int64
 	ReasoningCacheMaxRows       int64
+	RetryCount                  int
 	CursorDisplayReasoning      bool
 	CORS                        bool
 	Verbose                     bool
@@ -122,8 +128,9 @@ type rawConfig struct {
 	CORS                        *bool    `yaml:"cors"`
 	MissingReasoningStrategy    *string  `yaml:"missing_reasoning_strategy"`
 	ReasoningCacheMaxAgeSeconds *int64   `yaml:"reasoning_cache_max_age_seconds"`
-	ReasoningCacheMaxRows       *int64   `yaml:"reasoning_cache_max_rows"`
-	DeepSeekAPIKey              *string  `yaml:"deepseek_api_key"`
+	ReasoningCacheMaxRows       *int64  `yaml:"reasoning_cache_max_rows"`
+	RetryCount                  *int    `yaml:"retry_count"`
+	DeepSeekAPIKey              *string `yaml:"deepseek_api_key"`
 	PBAdminEmail                *string  `yaml:"pb_admin_email"`
 	PBAdminPassword             *string  `yaml:"pb_admin_password"`
 	PBDataDir                   *string  `yaml:"pb_data_dir"`
@@ -231,6 +238,7 @@ func Defaults() Config {
 		MissingReasoningStrategy:    DefaultMissingStrategy,
 		ReasoningCacheMaxAgeSeconds: DefaultCacheMaxAgeSeconds,
 		ReasoningCacheMaxRows:       DefaultCacheMaxRows,
+		RetryCount:                  DefaultRetryCount,
 		CursorDisplayReasoning:      DefaultDisplayReasoning,
 		CORS:                        DefaultCORS,
 		Verbose:                     DefaultVerbose,
@@ -273,6 +281,7 @@ func applyRaw(cfg *Config, raw rawConfig, configDir string) {
 	}
 	setIf(&cfg.ReasoningCacheMaxAgeSeconds, raw.ReasoningCacheMaxAgeSeconds)
 	setIf(&cfg.ReasoningCacheMaxRows, raw.ReasoningCacheMaxRows)
+	setIf(&cfg.RetryCount, raw.RetryCount)
 	// YAML values take priority over env vars.
 	setIf(&cfg.DeepSeekAPIKey, raw.DeepSeekAPIKey)
 	setIf(&cfg.PBAdminEmail, raw.PBAdminEmail)

@@ -22,6 +22,7 @@ const (
 	CollectionTokenUsage     = "token_usage"
 	CollectionReasoningCache = "reasoning_cache"
 	CollectionResponseStore  = "response_store"
+	CollectionErrorLog       = "error_log"
 )
 
 //nolint:unused
@@ -112,6 +113,23 @@ func allCollections() []collectionDef {
 			},
 			listRule: superuserOnly, viewRule: superuserOnly,
 			createRule: ns(""), updateRule: ns(""), deleteRule: superuserOnly,
+		},
+		{
+			name: CollectionErrorLog,
+			fields: core.FieldsList{
+				&core.TextField{Name: "endpoint"},
+				&core.TextField{Name: "method"},
+				&core.TextField{Name: "status_code"},
+				&core.TextField{Name: "request_headers"},
+				&core.TextField{Name: "request_body"},
+				&core.TextField{Name: "request_query"},
+				&core.TextField{Name: "response_headers"},
+				&core.TextField{Name: "response_body"},
+				&core.TextField{Name: "error_message"},
+				&core.TextField{Name: "recorded_at"},
+			},
+			listRule: superuserOnly, viewRule: superuserOnly,
+			createRule: ns(""), updateRule: superuserOnly, deleteRule: superuserOnly,
 		},
 	}
 }
@@ -255,4 +273,39 @@ func GetResponse(app core.App, responseID string) (*StoredResponse, error) {
 		Messages:   msgs,
 		Model:      rec.GetString("model"),
 	}, nil
+}
+
+// ErrorLogRecord holds error log details for persistence.
+type ErrorLogRecord struct {
+	Endpoint        string
+	Method          string
+	StatusCode      int
+	RequestHeaders  string
+	RequestBody     string
+	RequestQuery    string
+	ResponseHeaders string
+	ResponseBody    string
+	ErrorMessage    string
+}
+
+// RecordErrorLog saves an error log entry to the error_log collection.
+func RecordErrorLog(app core.App, log ErrorLogRecord) error {
+	c, err := app.FindCollectionByNameOrId(CollectionErrorLog)
+	if err != nil {
+		return err
+	}
+	r := core.NewRecord(c)
+	r.Set("endpoint", log.Endpoint)
+	r.Set("method", log.Method)
+	if log.StatusCode > 0 {
+		r.Set("status_code", fmt.Sprintf("%d", log.StatusCode))
+	}
+	r.Set("request_headers", log.RequestHeaders)
+	r.Set("request_body", log.RequestBody)
+	r.Set("request_query", log.RequestQuery)
+	r.Set("response_headers", log.ResponseHeaders)
+	r.Set("response_body", log.ResponseBody)
+	r.Set("error_message", log.ErrorMessage)
+	r.Set("recorded_at", time.Now().UTC().Format(time.RFC3339))
+	return app.Save(r)
 }

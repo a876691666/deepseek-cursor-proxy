@@ -295,6 +295,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) e
 		}
 	}
 
+	if queryKey != "" && s.PB != nil && apiKeyRecordID == "" {
+		s.Logger.Printf("rejected request path=%s status=403 reason=invalid_api_key", r.URL.Path)
+		s.writeJSON(w, http.StatusForbidden, map[string]any{
+			"error": map[string]any{"message": "Invalid or inactive API key"},
+		})
+		return nil
+	}
+
 	payload, err := s.readJSONBody(r)
 	if err != nil {
 		var tooLarge requestBodyTooLargeError
@@ -386,9 +394,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) e
 		upstreamReq.Header.Set("Accept-Language", v)
 	}
 
-	resp, err := s.Client.Do(upstreamReq)
+	resp, err := s.doUpstreamRequest(upstreamReq, upstreamBody)
 	if err != nil {
 		s.Logger.Printf("upstream request failed elapsed_ms=%d reason=%s", elapsedMs(started), err)
+		s.logUpstreamError(r, upstreamReq, upstreamBody, nil, "", err.Error())
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": map[string]any{"message": "Upstream request failed: " + err.Error()},
 		})
@@ -401,7 +410,27 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) e
 	}
 
 	if upstreamStatus >= 400 {
-		s.proxyUpstreamError(w, resp)
+		errBody, _ := readResponseBody(resp)
+		errStr := ""
+		if len(errBody) > 0 {
+			errStr = string(errBody)
+			if len(errStr) > 500 {
+				errStr = errStr[:500]
+			}
+		}
+		s.logUpstreamError(r, upstreamReq, upstreamBody, resp, string(errBody), fmt.Sprintf("upstream returned status %d", upstreamStatus))
+		if s.Config.Verbose {
+			s.logBytes("upstream error body", errBody)
+		}
+		contentType := resp.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		s.writeCORSHeaders(w)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
+		w.WriteHeader(upstreamStatus)
+		_, _ = w.Write(errBody)
 		return nil
 	}
 
@@ -413,6 +442,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) e
 		sent = s.proxyRegularResponse(w, resp, prepared.OriginalModel, requestMessages, prepared.CacheNamespace, prepared.RecoveryNotice, queryKey, modelName)
 	}
 	if !sent {
+		s.logUpstreamError(r, upstreamReq, upstreamBody, resp, "", "proxy response handling failed")
 		return nil
 	}
 	s.Logger.Printf(
@@ -768,6 +798,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	if queryKey != "" && s.PB != nil && apiKeyRecordID == "" {
+		s.Logger.Printf("rejected anthropic request path=%s status=403 reason=invalid_api_key", r.URL.Path)
+		s.writeJSON(w, http.StatusForbidden, map[string]any{
+			"error": map[string]any{"message": "Invalid or inactive API key"},
+		})
+		return nil
+	}
+
 	payload, err := s.readJSONBody(r)
 	if err != nil {
 		var tooLarge requestBodyTooLargeError
@@ -829,9 +867,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) error {
 		upstreamReq.Header.Set("anthropic-version", v)
 	}
 
-	resp, err := s.Client.Do(upstreamReq)
+	resp, err := s.doUpstreamRequest(upstreamReq, upstreamBody)
 	if err != nil {
 		s.Logger.Printf("anthropic upstream request failed elapsed_ms=%d reason=%s", elapsedMs(started), err)
+		s.logUpstreamError(r, upstreamReq, upstreamBody, nil, "", err.Error())
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": map[string]any{"message": "Upstream request failed: " + err.Error()},
 		})
@@ -844,7 +883,20 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if upstreamStatus >= 400 {
-		s.proxyUpstreamError(w, resp)
+		errBody, _ := readResponseBody(resp)
+		s.logUpstreamError(r, upstreamReq, upstreamBody, resp, string(errBody), fmt.Sprintf("upstream returned status %d", upstreamStatus))
+		if s.Config.Verbose {
+			s.logBytes("upstream error body", errBody)
+		}
+		contentType := resp.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		s.writeCORSHeaders(w)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
+		w.WriteHeader(upstreamStatus)
+		_, _ = w.Write(errBody)
 		return nil
 	}
 
@@ -855,6 +907,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) error {
 		sent = s.proxyAnthropicRegular(w, resp, originalModel, queryKey, modelName)
 	}
 	if !sent {
+		s.logUpstreamError(r, upstreamReq, upstreamBody, resp, "", "anthropic proxy response handling failed")
 		return nil
 	}
 	s.Logger.Printf(
@@ -1129,6 +1182,14 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	if queryKey != "" && s.PB != nil && apiKeyRecordID == "" {
+		s.Logger.Printf("rejected responses request path=%s status=403 reason=invalid_api_key", r.URL.Path)
+		s.writeJSON(w, http.StatusForbidden, map[string]any{
+			"error": map[string]any{"message": "Invalid or inactive API key"},
+		})
+		return nil
+	}
+
 	payload, err := s.readJSONBody(r)
 	if err != nil {
 		var tooLarge requestBodyTooLargeError
@@ -1275,9 +1336,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) error {
 	upstreamReq.Header.Set("Accept-Encoding", "identity")
 	upstreamReq.Header.Set("User-Agent", "DeepSeekGoProxy/0.1")
 
-	resp, err := s.Client.Do(upstreamReq)
+	resp, err := s.doUpstreamRequest(upstreamReq, upstreamBody)
 	if err != nil {
 		s.Logger.Printf("responses upstream request failed elapsed_ms=%d reason=%s", elapsedMs(started), err)
+		s.logUpstreamError(r, upstreamReq, upstreamBody, nil, "", err.Error())
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": map[string]any{"message": "Upstream request failed: " + err.Error()},
 		})
@@ -1296,6 +1358,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) error {
 			errStr = errStr[:500]
 		}
 		s.Logger.Printf("responses upstream error status=%d body=%s", upstreamStatus, errStr)
+		s.logUpstreamError(r, upstreamReq, upstreamBody, resp, string(errBody), fmt.Sprintf("upstream returned status %d", upstreamStatus))
 		s.writeJSON(w, upstreamStatus, map[string]any{
 			"error": map[string]any{"message": fmt.Sprintf("Upstream returned %d: %s", upstreamStatus, errStr)},
 		})
@@ -1306,6 +1369,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) error {
 	body, err := readResponseBody(resp)
 	if err != nil {
 		s.Logger.Printf("failed to read responses upstream response: %s", err)
+		s.logUpstreamError(r, upstreamReq, upstreamBody, resp, "", err.Error())
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": map[string]any{"message": "Upstream read failed: " + err.Error()},
 		})
@@ -1315,6 +1379,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) error {
 	var deepseekResponse map[string]any
 	if err := json.Unmarshal(body, &deepseekResponse); err != nil {
 		s.Logger.Printf("failed to parse responses upstream response: %s", err)
+		s.logUpstreamError(r, upstreamReq, upstreamBody, resp, string(body), err.Error())
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": map[string]any{"message": "Invalid upstream response: " + err.Error()},
 		})

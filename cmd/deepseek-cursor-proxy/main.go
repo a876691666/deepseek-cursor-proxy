@@ -140,6 +140,8 @@ func run(args []string) error {
 	fs.Var(&cacheMaxRows, "reasoning-cache-max-rows", "Max reasoning cache rows")
 	missingStrategy := stringFlag{}
 	fs.Var(&missingStrategy, "missing-reasoning-strategy", "Missing reasoning strategy: recover|reject")
+	retryCount := intFlag{}
+	fs.Var(&retryCount, "retry-count", "Number of retries for upstream requests on failure")
 	clearCache := fs.Bool("clear-reasoning-cache", false, "Clear reasoning cache and exit")
 	pbDataDir := stringFlag{}
 	fs.Var(&pbDataDir, "pb-data-dir", "PocketBase data directory")
@@ -201,6 +203,9 @@ func run(args []string) error {
 	}
 	if missingStrategy.set {
 		cfg.MissingReasoningStrategy = config.NormalizeMissingReasoningStrategy(missingStrategy.value)
+	}
+	if retryCount.set {
+		cfg.RetryCount = retryCount.value
 	}
 	if pbDataDir.set {
 		cfg.PBDataDir = pbDataDir.value
