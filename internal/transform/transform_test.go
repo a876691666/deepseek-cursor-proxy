@@ -120,12 +120,12 @@ func TestPrepareUpstreamRequestBasic(t *testing.T) {
 	if v, _ := options["include_usage"].(bool); !v {
 		t.Errorf("stream_options.include_usage must be true")
 	}
-	thinking, _ := prepared.Payload["thinking"].(map[string]any)
-	if t2, _ := thinking["type"].(string); t2 != "enabled" {
-		t.Errorf("thinking type: %v", thinking)
+	// v4 models do not get thinking/reasoning_effort forced by the proxy.
+	if _, ok := prepared.Payload["thinking"]; ok {
+		t.Errorf("v4 models should not have thinking forced, got %v", prepared.Payload["thinking"])
 	}
-	if effort := prepared.Payload["reasoning_effort"]; effort != "max" {
-		t.Errorf("reasoning_effort: %v", effort)
+	if _, ok := prepared.Payload["reasoning_effort"]; ok {
+		t.Errorf("v4 models should not have reasoning_effort forced, got %v", prepared.Payload["reasoning_effort"])
 	}
 }
 
@@ -170,7 +170,9 @@ func TestPrepareUpstreamLegacyFunctionsConverted(t *testing.T) {
 func TestPrepareUpstreamThinkingDisabledStripsReasoning(t *testing.T) {
 	cfg, st := defaultConfig(t)
 	cfg.Thinking = "disabled"
+	// Use a non-v4 model so the thinking=disabled config takes effect.
 	payload := map[string]any{
+		"model": "deepseek-chat",
 		"messages": []any{
 			map[string]any{
 				"role":              "assistant",
@@ -190,6 +192,8 @@ func TestPrepareUpstreamThinkingDisabledStripsReasoning(t *testing.T) {
 
 func TestRecoverFromMissingReasoning(t *testing.T) {
 	cfg, st := defaultConfig(t)
+	// Use a non-v4 upstream model so repairReasoning is true and recovery activates.
+	cfg.UpstreamModel = "deepseek-reasoner"
 	payload := map[string]any{
 		"messages": []any{
 			map[string]any{"role": "system", "content": "sys"},
@@ -235,6 +239,7 @@ func TestRecoverFromMissingReasoning(t *testing.T) {
 
 func TestStrictMissingReasoningPropagates(t *testing.T) {
 	cfg, st := defaultConfig(t)
+	cfg.UpstreamModel = "deepseek-reasoner"
 	cfg.MissingReasoningStrategy = "reject"
 	payload := map[string]any{
 		"messages": []any{
@@ -264,6 +269,7 @@ func TestStrictMissingReasoningPropagates(t *testing.T) {
 
 func TestRestoreReasoningFromCache(t *testing.T) {
 	cfg, st := defaultConfig(t)
+	cfg.UpstreamModel = "deepseek-reasoner"
 	cfg.ReasoningEffort = "high"
 	authorization := "Bearer xyz"
 	upstreamModel := cfg.UpstreamModel

@@ -299,10 +299,10 @@ func normalizeMessage(
 			delete(out, "reasoning_content")
 		} else if repairReasoning {
 			reasoning, ok := out["reasoning_content"].(string)
-			if !ok || reasoning == "" {
+			if !ok {
 				delete(out, "reasoning_content")
 			}
-			if !ok || reasoning == "" {
+			if reasoning == "" {
 				needs := assistantNeedsReasoningForToolContext(out, priorMessages)
 				if needs && st != nil {
 					scope := store.ConversationScope(priorMessages, cacheNamespace)
@@ -581,29 +581,58 @@ func PrepareUpstreamRequest(
 		}
 	}
 
-	if cfg.Thinking != "pass-through" {
+	// For v4-family models (deepseek-v4-pro / deepseek-v4-flash), do not inject
+	// the configured thinking type or reasoning_effort into the upstream payload —
+	// let DeepSeek v4 decide its own thinking behavior.
+	// Likewise, skip reasoning repair/recovery for v4 models’ message history:
+	// v4 may not return reasoning_content when thinking isn't explicitly enabled,
+	// and treating that as a missing-reasoning error would trigger infinite
+	// recovery loops.
+	// We still honor keepReasoning (strip when thinking=disabled) so the config
+	// can be used to remove reasoning_content from history if desired.
+	isV4Model := upstreamModel == "deepseek-v4-pro" || upstreamModel == "deepseek-v4-flash"
+
+	if !isV4Model && cfg.Thinking != "pass-through" {
 		prepared["thinking"] = map[string]any{"type": cfg.Thinking}
 	}
-	thinking, _ := prepared["thinking"].(map[string]any)
-	thinkingType, _ := thinking["type"].(string)
-	thinkingEnabled := thinkingType == "enabled"
-	thinkingDisabled := thinkingType == "disabled"
+
+	// Message-processing flags.
+	thinkingEnabled := cfg.Thinking == "enabled"
+	thinkingDisabled := cfg.Thinking == "disabled"
+	repairReasoning := thinkingEnabled && !isV4Model
+	keepReasoning := !thinkingDisabled
 
 	if thinkingEnabled {
 		var rawEffort any
 		if v, ok := prepared["reasoning_effort"]; ok && v != nil {
 			rawEffort = v
-		} else {
+		} else if !isV4Model {
 			rawEffort = cfg.ReasoningEffort
 		}
-		prepared["reasoning_effort"] = NormalizeReasoningEffort(rawEffort)
+		if rawEffort != nil {
+			prepared["reasoning_effort"] = NormalizeReasoningEffort(rawEffort)
+		}
 	}
 
-	cacheNamespace := ReasoningCacheNamespace(cfg, upstreamModel, prepared["thinking"], prepared["reasoning_effort"], authorization)
+	// Compute cache namespace. For v4 models we don't inject thinking into the
+	// upstream payload, but we still need a stable namespace that reflects the
+	// configured thinking mode and reasoning effort so the reasoning cache is
+	// keyed correctly.
+	nsThinking := prepared["thinking"]
+	nsReasoningEffort := prepared["reasoning_effort"]
+	if isV4Model {
+		if nsThinking == nil {
+			nsThinking = map[string]any{"type": cfg.Thinking}
+		}
+		if nsReasoningEffort == nil {
+			nsReasoningEffort = cfg.ReasoningEffort
+		}
+	}
+	cacheNamespace := ReasoningCacheNamespace(cfg, upstreamModel, nsThinking, nsReasoningEffort, authorization)
 
 	messages, patchedCount, missingIndexes := NormalizeMessages(
 		payload["messages"], st, cacheNamespace,
-		thinkingEnabled, !thinkingDisabled,
+		repairReasoning, keepReasoning,
 	)
 
 	recoveredCount := 0
@@ -626,7 +655,7 @@ func PrepareUpstreamRequest(
 		}
 		messages, patchedCount, missingIndexes = NormalizeMessages(
 			converted, st, cacheNamespace,
-			thinkingEnabled, !thinkingDisabled,
+			repairReasoning, keepReasoning,
 		)
 	}
 
